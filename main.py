@@ -1,5 +1,6 @@
 import os
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import psycopg
 from dotenv import load_dotenv
@@ -58,36 +59,38 @@ def root():
         "endpoints": ["/tasks"]
     }
 
-
 @app.get("/health", description="Check whether the API is running.")
 def health():
     return {"status": "ok"}
 
 @app.get("/tasks", description="Get all tasks.")
 def get_tasks():
-    """Stage 1: Read all tasks from SQLite database."""
+    """Stage 2: Read all tasks from PostgreSQL database."""
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM tasks")
-    tasks = cursor.fetchall()
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT id, title, done FROM tasks")
+        rows = cursor.fetchall()
     conn.close()
-    return [dict(task) for task in tasks]
+
+    # Map raw rows into dictionaries
+    return [{"id": row[0], "title": row[1], "done": row[2]} for row in rows]
 
 @app.get("/tasks/{task_id}", description="Get a single task by ID.")
 def get_task(task_id: int):
-    """Stage 1: Read a single task by ID from SQLite database."""
+    """Stage 2: Read a single task by ID from PostgreSQL database."""
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-    task = cursor.fetchone()
+    with conn.cursor() as cursor:
+        # Use %s parameterized query to prevent SQL injection
+        cursor.execute("SELECT id, title, done FROM tasks WHERE id = %s", (task_id,))
+        row = cursor.fetchone()
     conn.close()
 
-    if task is None:
+    if row is None:
         return JSONResponse(
-            status_code=404, content={"error": f"Task {task_id} not found"}
+            status_code=404, content={"error": "Task not found"}
         )
 
-    return dict(task)
+    return {"id": row[0], "title": row[1], "done": row[2]}
 
 @app.post("/tasks", status_code=201, description="Create a new task.")
 def create_task(task_data: dict):
