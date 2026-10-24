@@ -94,7 +94,7 @@ def get_task(task_id: int):
 
 @app.post("/tasks", status_code=201, description="Create a new task.")
 def create_task(task_data: dict):
-    """Stage 2: Create a new task in the SQLite database with validation."""
+    """Stage 3: Create a new task in PostgreSQL using %s and RETURNING."""
     title = task_data.get("title")
 
     if not isinstance(title, str) or not title.strip():
@@ -104,115 +104,107 @@ def create_task(task_data: dict):
         )
 
     conn = get_db_connection()
-    cursor = conn.cursor()
-
-    # Insert task into SQLite database (done defaults to 0 / False)
-    cursor.execute(
-        "INSERT INTO tasks (title, done) VALUES (?, ?)", (title.strip(), 0)
-    )
-    conn.commit()
-
-    new_id = cursor.lastrowid
-
-    # Fetch the newly created record to return it
-    cursor.execute("SELECT * FROM tasks WHERE id = ?", (new_id,))
-    new_task = cursor.fetchone()
+    with conn.cursor() as cursor:
+        # PostgreSQL RETURNING clause hands back the new row instantly
+        cursor.execute(
+            "INSERT INTO tasks (title, done) VALUES (%s, %s) RETURNING id, title, done", 
+            (title.strip(), False)
+        )
+        row = cursor.fetchone()
+        conn.commit()
     conn.close()
 
-    return dict(new_task)
+    return {"id": row[0], "title": row[1], "done": row[2]}
 
 @app.put("/tasks/{task_id}", description="Update a task by ID.")
 def update_task(task_id: int, task_data: dict):
-    """Stage 3: Update a task in the SQLite database by ID."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    # Check if task exists
-    cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-    task = cursor.fetchone()
-    
-    if task is None:
-        conn.close()
-        return JSONResponse(
-            status_code=404,
-            content={"error": f"Task {task_id} not found"}
-        )
-
+    """Stage 3: Update a task in PostgreSQL by ID."""
     if not task_data:
-        conn.close()
         return JSONResponse(
             status_code=400,
             content={"error": "Request body cannot be empty"}
         )
+    
+    conn = get_db_connection()
+    with conn.cursor() as cursor:
+        # Check if task exists using %s placeholder
+        cursor.execute("SELECT id, title, done FROM tasks WHERE id = %s", (task_id,))
+        task = cursor.fetchone()
+    
+        if task is None:
+            conn.close()
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Task not found"}
+            )
 
-    # Current values from DB
-    current_title = task["title"]
-    current_done = task["done"]
+        current_title = task[1]
+        current_done = task[2]
 
-    if "title" in task_data:
-        title = task_data["title"]
+        if "title" in task_data:
+            title = task_data["title"]
 
-        if not isinstance(title, str) or not title.strip():
+            if not isinstance(title, str) or not title.strip():
+                conn.close()
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "Title must be a non-empty string"}
+                )
+            current_title = title.strip()
+
+        if "done" in task_data:
+            done = task_data["done"]
+
+            if not isinstance(done, bool):
+                conn.close()
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "Done must be a boolean"}
+                )
+
+            current_done = done
+
+        if "title" not in task_data and "done" not in task_data:
             conn.close()
             return JSONResponse(
                 status_code=400,
-                content={"error": "Title must be a non-empty string"}
-            )
-        current_title = title.strip()
-
-    if "done" in task_data:
-        done = task_data["done"]
-
-        if not isinstance(done, bool):
-            conn.close()
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Done must be a boolean"}
+                content={"error": "At least one of title or done is required"}
             )
 
-        current_done = 1 if done else 0
-
-    if "title" not in task_data and "done" not in task_data:
-        conn.close()
-        return JSONResponse(
-            status_code=400,
-            content={"error": "At least one of title or done is required"}
+        # Update database using %s placeholders
+        cursor.execute(
+            "UPDATE tasks SET title = %s, done = %s WHERE id = %s",
+            (current_title, current_done, task_id),
         )
+        conn.commit()
 
-    # Update database
-    cursor.execute(
-        "UPDATE tasks SET title = ?, done = ? WHERE id = ?",
-        (current_title, current_done, task_id),
-    )
-    conn.commit()
-
-    # Fetch updated task to return
-    cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-    updated_task = cursor.fetchone()
+        # Fetch updated task to return
+        cursor.execute("SELECT id, title, done FROM tasks WHERE id = %s", (task_id,))
+        updated_row = cursor.fetchone()
     conn.close()
 
-    return dict(updated_task)
+    return {"id": updated_row[0], "title": updated_row[1], "done": updated_row[2]}
 
 @app.delete("/tasks/{task_id}", status_code=204, description="Delete a task by ID.")
 def delete_task(task_id: int):
-    """Stage 3: Delete a task from the SQLite database by ID."""
+    """Stage 3: Delete a task from PostgreSQL by ID."""
     conn = get_db_connection()
-    cursor = conn.cursor()
+    with conn.cursor() as cursor:
 
-    # Check if task exists
-    cursor.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-    task = cursor.fetchone()
+        # Check if task exists using %s placeholder
+        cursor.execute("SELECT id, title, done FROM tasks WHERE id = %s", (task_id,))
+        task = cursor.fetchone()
 
-    if task is None:
-        conn.close()
-        return JSONResponse(
-            status_code=404,
-            content={"error": f"Task {task_id} not found"}
-        )
+        if task is None:
+            conn.close()
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Task not found"}
+            )
 
-    # Delete task
-    cursor.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-    conn.commit()
+        # Delete task using %s placeholder
+        cursor.execute("DELETE FROM tasks WHERE id = %s", (task_id,))
+        conn.commit()
     conn.close()
 
     return
